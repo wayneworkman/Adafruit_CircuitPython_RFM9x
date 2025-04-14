@@ -122,6 +122,7 @@ FS_TX_MODE = 0b010
 TX_MODE = 0b011
 FS_RX_MODE = 0b100
 RX_MODE = 0b101
+RX_SINGLE_MODE = 0b110  # Added to support Rx Single mode.
 # supervisor.ticks_ms() contants
 _TICKS_PERIOD = const(1 << 29)
 _TICKS_MAX = const(_TICKS_PERIOD - 1)
@@ -907,12 +908,93 @@ class RFM9x:
                         not with_header and packet is not None
                     ):  # skip the header if not wanted
                         packet = packet[4:]
-        # Listen again if necessary and return the result packet.
         if keep_listening:
             self.listen()
         else:
             # Enter idle mode to stop receiving other packets.
             self.idle()
         # Clear interrupt.
+        self._write_u8(_RH_RF95_REG_12_IRQ_FLAGS, 0xFF)
+        return packet
+
+    def receive_single(
+        self,
+        *,
+        with_header: bool = False,
+        with_ack: bool = False,
+        timeout: Optional[float] = None
+    ) -> Optional[bytearray]:
+        """Receive a single packet in Rx Single mode.
+        This mode configures the radio to receive one packet only, and then automatically goes to standby.
+        Parameters:
+          with_header: If True, the returned packet includes the 4-byte RadioHead header.
+          with_ack: If True, an ACK will be sent upon receipt for Reliable Datagram mode.
+          timeout: Maximum time in seconds to wait for a packet. Defaults to self.receive_timeout.
+        Returns: The received packet as a bytearray (header stripped unless with_header is True), or None if timeout.
+        """
+        timed_out = False
+        if timeout is None:
+            timeout = self.receive_timeout
+        # Configure for single reception: set DIO0 mapping and switch to RX Single mode.
+        self.dio0_mapping = 0b00  # Interrupt on rx done.
+        self.operation_mode = RX_SINGLE_MODE
+        if timeout is not None:
+            if HAS_SUPERVISOR:
+                start = supervisor.ticks_ms()
+                while not timed_out and not self.rx_done():
+                    if ticks_diff(supervisor.ticks_ms(), start) >= timeout * 1000:
+                        timed_out = True
+            else:
+                start = time.monotonic()
+                while not timed_out and not self.rx_done():
+                    if time.monotonic() - start >= timeout:
+                        timed_out = True
+        packet = None
+        # Save last RSSI and SNR readings.
+        self.last_rssi = self.rssi
+        self.last_snr = self.snr
+        # Go to idle mode after single reception.
+        self.idle()
+        if not timed_out:
+            if self.enable_crc and self.crc_error():
+                self.crc_error_count += 1
+            else:
+                fifo_length = self._read_u8(_RH_RF95_REG_13_RX_NB_BYTES)
+                if fifo_length > 0:
+                    current_addr = self._read_u8(_RH_RF95_REG_10_FIFO_RX_CURRENT_ADDR)
+                    self._write_u8(_RH_RF95_REG_0D_FIFO_ADDR_PTR, current_addr)
+                    packet = bytearray(fifo_length)
+                    self._read_into(_RH_RF95_REG_00_FIFO, packet)
+                self._write_u8(_RH_RF95_REG_12_IRQ_FLAGS, 0xFF)
+                if fifo_length < 5:
+                    packet = None
+                else:
+                    if (
+                        self.node != _RH_BROADCAST_ADDRESS
+                        and packet[0] != _RH_BROADCAST_ADDRESS
+                        and packet[0] != self.node
+                    ):
+                        packet = None
+                    elif (
+                        with_ack
+                        and ((packet[3] & _RH_FLAGS_ACK) == 0)
+                        and (packet[0] != _RH_BROADCAST_ADDRESS)
+                    ):
+                        if self.ack_delay is not None:
+                            time.sleep(self.ack_delay)
+                        self.send(
+                            b"!",
+                            destination=packet[1],
+                            node=packet[0],
+                            identifier=packet[2],
+                            flags=(packet[3] | _RH_FLAGS_ACK),
+                        )
+                        if (self.seen_ids[packet[1]] == packet[2]) and (packet[3] & _RH_FLAGS_RETRY):
+                            packet = None
+                        else:
+                            self.seen_ids[packet[1]] = packet[2]
+                    if not with_header and packet is not None:
+                        packet = packet[4:]
+        # Clear interrupt flags.
         self._write_u8(_RH_RF95_REG_12_IRQ_FLAGS, 0xFF)
         return packet
