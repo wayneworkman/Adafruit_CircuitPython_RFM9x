@@ -12,6 +12,9 @@ This example continuously demonstrates how to use the new
 receive_single() method in a loop to perform one-shot reception.
 After each packet is received (or a timeout occurs), the radio automatically
 returns to standby and the process repeats.
+
+This example is written to recieve from the rfm9x_node1.py file.
+
 """
 
 import board
@@ -30,6 +33,8 @@ spi = busio.SPI(board.SCK, MOSI=board.MOSI, MISO=board.MISO)
 
 # Initialize the RFM9x radio.
 rfm9x = adafruit_rfm9x.RFM9x(spi, CS, RESET, RADIO_FREQ_MHZ)
+rfm9x.node = 2
+rfm9x.destination = 1
 
 while True:
     print("Waiting for a single packet (Rx Single mode)...")
