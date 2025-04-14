@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: 2023 Your Name for Adafruit Industries
 # SPDX-License-Identifier: MIT
 
+# Simple demo of sending and recieving data with the RFM95 LoRa radio.
+# Author: Wayne Workman
+
 """
 Rx Single Mode Continuous Example for RFM9x
 ===========================================
